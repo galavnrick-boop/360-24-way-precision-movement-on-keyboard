@@ -1,0 +1,171 @@
+import pyvjoy
+import keyboard
+import time
+import math
+import tkinter as tk
+
+# --- Settings ---
+STICK_ID = 1
+CENTER   = 16384   # stick center
+MAG      = 16000   # how far from center to push
+TILT_DEG = 20      # tilt angle (degrees) for modifiers
+
+# --- Connect to vJoy ---
+j = pyvjoy.VJoyDevice(STICK_ID)
+
+# --- Reset all axes so nothing drifts ---
+def reset_axes():
+    j.set_axis(pyvjoy.HID_USAGE_X, CENTER)
+    j.set_axis(pyvjoy.HID_USAGE_Y, CENTER)
+    j.set_axis(pyvjoy.HID_USAGE_RX, CENTER)
+    j.set_axis(pyvjoy.HID_USAGE_RY, CENTER)
+    j.set_axis(pyvjoy.HID_USAGE_Z, CENTER)
+    j.set_axis(pyvjoy.HID_USAGE_RZ, CENTER)
+    j.set_axis(pyvjoy.HID_USAGE_SL0, CENTER)
+    j.set_axis(pyvjoy.HID_USAGE_SL1, CENTER)
+
+reset_axes()
+
+# --- Base key → vector (unit circle) ---
+base_vectors = {
+    "2": (0, -1),   # up
+    "w": (0,  1),   # down
+    "q": (-1, 0),   # left
+    "e": ( 1, 0),   # right
+}
+
+running = True
+current_x, current_y = CENTER, CENTER
+
+# --- Tilt state ---
+tilt_mode = 0
+tilt_first = None
+
+def get_tilt():
+    global tilt_mode, tilt_first
+
+    backslash_pressed = keyboard.is_pressed("\\")
+    num7_pressed = keyboard.is_pressed("num 7")
+
+    if not backslash_pressed and not num7_pressed:
+        tilt_mode = 0
+        tilt_first = None
+        return 0
+
+    if tilt_first is None:
+        if backslash_pressed:
+            tilt_first = "\\"
+            tilt_mode = +1
+        elif num7_pressed:
+            tilt_first = "7"
+            tilt_mode = -1
+
+    if tilt_first == "\\":
+        if num7_pressed:
+            tilt_mode = +2
+    elif tilt_first == "7":
+        if backslash_pressed:
+            tilt_mode = -2
+
+    return tilt_mode * TILT_DEG
+
+# --- HUD setup ---
+root = tk.Tk()
+root.title("vJoy HUD")
+root.overrideredirect(True)
+root.attributes("-topmost", True)
+root.wm_attributes("-transparentcolor", "black")
+root.configure(bg="black")
+
+# smaller HUD, bottom-left
+win_w, win_h = 150, 150
+screen_w = root.winfo_screenwidth()
+screen_h = root.winfo_screenheight()
+root.geometry(f"{win_w}x{win_h}+0+{screen_h - win_h}")
+
+canvas = tk.Canvas(root, width=win_w, height=win_h, bg="black", highlightthickness=0)
+canvas.pack()
+cx, cy, r = win_w//2, win_h//2, 55
+
+# generate 24 rainbow colors
+def hsv_to_rgb(h, s, v):
+    import colorsys
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+colors = [hsv_to_rgb(i/24, 1, 1) for i in range(24)]
+
+def update_hud():
+    canvas.delete("all")
+
+    # draw stick gate
+    canvas.create_oval(cx-r, cy-r, cx+r, cy+r, outline="white")
+
+    # draw 24 ridges (every 15°) with rainbow colors
+    for i in range(24):
+        angle = math.radians(i * 15)
+        x1 = cx + math.cos(angle) * (r - 5)
+        y1 = cy + math.sin(angle) * (r - 5)
+        x2 = cx + math.cos(angle) * (r + 5)
+        y2 = cy + math.sin(angle) * (r + 5)
+        canvas.create_line(x1, y1, x2, y2, fill=colors[i], width=2)
+
+    # draw stick position
+    nx = (current_x - CENTER) / MAG
+    ny = (current_y - CENTER) / MAG
+    x = cx + nx * r
+    y = cy + ny * r
+    canvas.create_oval(cx-3, cy-3, cx+3, cy+3, fill="white")
+    canvas.create_line(cx, cy, x, y, fill="red", width=2)
+
+    root.update()
+
+def rotate_vec(vx, vy, angle_deg):
+    rad = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    return vx * cos_a - vy * sin_a, vx * sin_a + vy * cos_a
+
+def update_stick():
+    global current_x, current_y
+
+    dx = dy = 0.0
+    for k, (vx, vy) in base_vectors.items():
+        if keyboard.is_pressed(k):
+            dx += vx
+            dy += vy
+
+    if dx == 0 and dy == 0:
+        current_x, current_y = CENTER, CENTER
+    else:
+        length = math.hypot(dx, dy)
+        dx /= length
+        dy /= length
+
+        tilt = get_tilt()
+        if dy > 0 or dx < 0:
+            tilt = -tilt
+        if dx > 0 and dy > 0:
+            tilt = -tilt
+
+        dx, dy = rotate_vec(dx, dy, tilt)
+        current_x = int(CENTER + dx * MAG)
+        current_y = int(CENTER + dy * MAG)
+
+    j.set_axis(pyvjoy.HID_USAGE_X, current_x)
+    j.set_axis(pyvjoy.HID_USAGE_Y, current_y)
+
+    update_hud()
+
+# --- Main loop ---
+print("✅ vJoy HUD running (bottom-left). Press ESC to quit.")
+
+try:
+    while running:
+        if keyboard.is_pressed("esc"):
+            running = False
+            break
+        update_stick()
+        time.sleep(0.02)
+finally:
+    reset_axes()
+    print("❌ Exited.")
